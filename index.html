@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Censo de teléfonos</title>
+<style>
+  :root {
+    --azul: #004b93;
+    --azul-suave: #e8f0f9;
+    --texto: #1f2933;
+    --gris: #667085;
+    --borde: #cbd2d9;
+    --fondo: #f3f5f8;
+    --rojo: #c62828;
+    --verde: #2e7d32;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--fondo);
+    color: var(--texto);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 16px;
+  }
+  main {
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 20px;
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .12);
+  }
+  h1 { margin: 0 0 16px; color: var(--azul); font-size: 22px; }
+  .campo { position: relative; margin-bottom: 18px; }
+  label { display: block; margin-bottom: 6px; font-weight: 600; }
+  .opcional { color: var(--gris); font-weight: 400; }
+  input, select {
+    width: 100%;
+    min-height: 46px;
+    padding: 10px 12px;
+    border: 1px solid var(--borde);
+    border-radius: 8px;
+    background: #fff;
+    color: inherit;
+    font: inherit;
+  }
+  input:focus, select:focus { outline: 2px solid var(--azul); outline-offset: 0; }
+  input:disabled { background: #eef0f3; }
+  #lista {
+    position: absolute;
+    z-index: 10;
+    left: 0;
+    right: 0;
+    max-height: 260px;
+    margin: 4px 0 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+    background: #fff;
+    border: 1px solid var(--borde);
+    border-radius: 8px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, .18);
+  }
+  #lista li { padding: 11px 12px; border-bottom: 1px solid #eef0f3; cursor: pointer; }
+  #lista li:last-child { border-bottom: 0; }
+  #lista li.activa, #lista li[role="option"]:hover { background: var(--azul-suave); }
+  #lista .sap { display: block; font-weight: 600; }
+  #lista .nombre { display: block; color: var(--gris); font-size: 14px; }
+  #lista li.nota { color: var(--gris); font-size: 14px; cursor: default; }
+  .error { display: block; min-height: 18px; margin-top: 4px; color: var(--rojo); font-size: 14px; }
+  .aviso { margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; background: var(--azul-suave); }
+  .aviso.mal { background: #fdecea; color: var(--rojo); }
+  .aviso.bien { background: #e7f4e8; color: var(--verde); }
+  button {
+    width: 100%;
+    min-height: 48px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--azul);
+    color: #fff;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .6; cursor: default; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Censo de teléfonos</h1>
+  <p id="aviso" class="aviso" role="status">Cargando clientes…</p>
+  <button id="reintentar" type="button" hidden>Reintentar</button>
+
+  <form id="formulario" novalidate hidden>
+    <div class="campo">
+      <label for="censador">Censador</label>
+      <select id="censador"><option value="">Escogé tu nombre</option></select>
+      <small id="error-censador" class="error"></small>
+    </div>
+
+    <div class="campo">
+      <label for="cliente">SAP del cliente</label>
+      <input id="cliente" type="text" role="combobox" autocomplete="off" autocapitalize="off" spellcheck="false"
+             aria-autocomplete="list" aria-expanded="false" aria-controls="lista"
+             placeholder="Digitá el SAP o el nombre">
+      <ul id="lista" role="listbox" aria-label="Clientes" hidden></ul>
+      <small id="error-cliente" class="error"></small>
+    </div>
+
+    <div class="campo">
+      <label for="telefono1">Teléfono 1</label>
+      <input id="telefono1" type="tel" inputmode="numeric" maxlength="9" autocomplete="off" placeholder="8 dígitos">
+      <small id="error-telefono1" class="error"></small>
+    </div>
+
+    <div class="campo">
+      <label for="telefono2">Teléfono 2 <span class="opcional">(opcional)</span></label>
+      <input id="telefono2" type="tel" inputmode="numeric" maxlength="9" autocomplete="off" placeholder="8 dígitos">
+      <small id="error-telefono2" class="error"></small>
+    </div>
+
+    <button id="enviar" type="submit">Enviar</button>
+  </form>
+</main>
+
+<script>
+  // Pegá aquí la URL /exec de tu implementación de Apps Script.
+  const API_URL = 'https://script.google.com/macros/s/AKfycbx3eoR3bA2DzzxzTnuLRuPtoUDwqrkMvXJiSJHUVaZRocfuEx8-ROYCRte8fOLgczjS/exec';
+  const MAX_RESULTADOS = 50;
+  const CLAVE_CENSADOR = 'censo-telefonos-censador';
+
+  const $ = id => document.getElementById(id);
+  const aviso = $('aviso'), reintentar = $('reintentar'), formulario = $('formulario');
+  const censador = $('censador'), cliente = $('cliente'), lista = $('lista');
+  const telefono1 = $('telefono1'), telefono2 = $('telefono2'), enviar = $('enviar');
+
+  let clientes = [];
+  let clienteElegido = null;
+  let visibles = [];
+  let indiceActivo = -1;
+
+  const normalizar = texto => String(texto)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const soloDigitos = texto => texto.replace(/\D/g, '');
+  const telefonoValido = texto => /^[267]\d{7}$/.test(texto);
+
+  function mostrarAviso(texto, tipo) {
+    aviso.textContent = texto;
+    aviso.className = 'aviso' + (tipo ? ' ' + tipo : '');
+    aviso.hidden = !texto;
+  }
+
+  function ponerError(id, texto) {
+    $('error-' + id).textContent = texto || '';
+  }
+
+  function guardarCensador(valor) {
+    try { localStorage.setItem(CLAVE_CENSADOR, valor); } catch (e) {}
+  }
+
+  function leerCensador() {
+    try { return localStorage.getItem(CLAVE_CENSADOR) || ''; } catch (e) { return ''; }
+  }
+
+  async function cargarDatos() {
+    reintentar.hidden = true;
+    mostrarAviso('Cargando clientes…');
+    try {
+      if (API_URL.startsWith('PEGAR_')) throw new Error('Falta pegar la URL de Apps Script en index.html.');
+      const respuesta = await fetch(API_URL);
+      const datos = await respuesta.json();
+      if (!datos.ok) throw new Error(datos.error || 'No se pudo leer la hoja.');
+      prepararFormulario(datos);
+      mostrarAviso('');
+    } catch (error) {
+      mostrarAviso('No se pudieron cargar los clientes. ' + error.message, 'mal');
+      reintentar.hidden = false;
+    }
+  }
+
+  function prepararFormulario(datos) {
+    clientes = datos.clientes.map(c => ({
+      ...c,
+      sapNormal: normalizar(c.sap),
+      busqueda: normalizar(c.sap + ' ' + c.nombre)
+    }));
+
+    censador.length = 1;
+    datos.censadores.forEach(nombre => censador.add(new Option(nombre, nombre)));
+    const guardado = leerCensador();
+    if (datos.censadores.includes(guardado)) censador.value = guardado;
+
+    formulario.hidden = false;
+  }
+
+  function buscar(texto) {
+    const consulta = normalizar(texto.trim());
+    if (!consulta) return clientes;
+    const palabras = consulta.split(/\s+/);
+    const encontrados = clientes.filter(c => palabras.every(p => c.busqueda.includes(p)));
+    return encontrados.sort((a, b) =>
+      Number(b.sapNormal.startsWith(consulta)) - Number(a.sapNormal.startsWith(consulta)));
+  }
+
+  function abrirLista() {
+    const encontrados = buscar(cliente.value);
+    visibles = encontrados.slice(0, MAX_RESULTADOS);
+    indiceActivo = -1;
+    lista.replaceChildren();
+
+    visibles.forEach((c, i) => {
+      const opcion = document.createElement('li');
+      opcion.id = 'opcion-' + i;
+      opcion.setAttribute('role', 'option');
+      opcion.dataset.indice = i;
+      const sap = document.createElement('span');
+      sap.className = 'sap';
+      sap.textContent = c.sap;
+      const nombre = document.createElement('span');
+      nombre.className = 'nombre';
+      nombre.textContent = c.nombre;
+      opcion.append(sap, nombre);
+      lista.append(opcion);
+    });
+
+    if (!visibles.length) agregarNota('No hay clientes con ese dato.');
+    else if (encontrados.length > visibles.length) {
+      agregarNota(`Mostrando ${visibles.length} de ${encontrados.length}. Seguí digitando para filtrar.`);
+    }
+
+    lista.hidden = false;
+    cliente.setAttribute('aria-expanded', 'true');
+    cliente.removeAttribute('aria-activedescendant');
+  }
+
+  function agregarNota(texto) {
+    const nota = document.createElement('li');
+    nota.className = 'nota';
+    nota.textContent = texto;
+    lista.append(nota);
+  }
+
+  function cerrarLista() {
+    lista.hidden = true;
+    cliente.setAttribute('aria-expanded', 'false');
+    cliente.removeAttribute('aria-activedescendant');
+    indiceActivo = -1;
+  }
+
+  function marcarActiva(indice) {
+    lista.querySelectorAll('.activa').forEach(el => el.classList.remove('activa'));
+    indiceActivo = indice;
+    const opcion = $('opcion-' + indice);
+    if (!opcion) return;
+    opcion.classList.add('activa');
+    opcion.scrollIntoView({ block: 'nearest' });
+    cliente.setAttribute('aria-activedescendant', opcion.id);
+  }
+
+  function elegirCliente(c) {
+    clienteElegido = c;
+    cliente.value = c.sap + ' - ' + c.nombre;
+    ponerError('cliente', '');
+    cerrarLista();
+  }
+
+  function limpiarCliente() {
+    clienteElegido = null;
+    cliente.value = '';
+  }
+
+  function validar() {
+    const tel1 = soloDigitos(telefono1.value);
+    const tel2 = soloDigitos(telefono2.value);
+    const errores = {
+      censador: censador.value ? '' : 'Escogé tu nombre.',
+      cliente: clienteElegido ? '' : 'Escogé un cliente de la lista.',
+      telefono1: telefonoValido(tel1) ? '' : 'Debe tener 8 dígitos y empezar con 2, 6 o 7.',
+      telefono2: !tel2 || telefonoValido(tel2) ? '' : 'Debe tener 8 dígitos y empezar con 2, 6 o 7.'
+    };
+    Object.entries(errores).forEach(([id, texto]) => ponerError(id, texto));
+    const primerError = Object.keys(errores).find(id => errores[id]);
+    if (primerError) $(primerError).focus();
+    return primerError ? null : { tel1, tel2 };
+  }
+
+  censador.addEventListener('change', () => {
+    guardarCensador(censador.value);
+    ponerError('censador', '');
+  });
+
+  cliente.addEventListener('input', () => {
+    clienteElegido = null;
+    abrirLista();
+  });
+
+  cliente.addEventListener('focus', () => {
+    cliente.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    if (!clienteElegido) abrirLista();
+  });
+
+  cliente.addEventListener('blur', cerrarLista);
+
+  cliente.addEventListener('keydown', evento => {
+    if (evento.key === 'Escape') return cerrarLista();
+    if (evento.key === 'ArrowDown' || evento.key === 'ArrowUp') {
+      evento.preventDefault();
+      if (lista.hidden) abrirLista();
+      if (!visibles.length) return;
+      const paso = evento.key === 'ArrowDown' ? 1 : -1;
+      marcarActiva((indiceActivo + paso + visibles.length) % visibles.length);
+    }
+    if (evento.key === 'Enter' && !lista.hidden) {
+      evento.preventDefault();
+      if (indiceActivo >= 0) elegirCliente(visibles[indiceActivo]);
+      else if (visibles.length === 1) elegirCliente(visibles[0]);
+    }
+  });
+
+  lista.addEventListener('mousedown', evento => evento.preventDefault());
+
+  lista.addEventListener('click', evento => {
+    const opcion = evento.target.closest('li[role="option"]');
+    if (opcion) elegirCliente(visibles[Number(opcion.dataset.indice)]);
+  });
+
+  document.addEventListener('click', evento => {
+    if (evento.target !== cliente && !lista.contains(evento.target)) cerrarLista();
+  });
+
+  [telefono1, telefono2].forEach(campo => {
+    campo.addEventListener('input', () => ponerError(campo.id, ''));
+  });
+
+  reintentar.addEventListener('click', cargarDatos);
+
+  formulario.addEventListener('submit', async evento => {
+    evento.preventDefault();
+    mostrarAviso('');
+    cerrarLista();
+    const telefonos = validar();
+    if (!telefonos) return;
+
+    enviar.disabled = true;
+    enviar.textContent = 'Enviando…';
+    try {
+      const respuesta = await fetch(API_URL, {
+        method: 'POST',
+        body: JSON.stringify({
+          censador: censador.value,
+          sap: clienteElegido.sap,
+          telefono1: telefonos.tel1,
+          telefono2: telefonos.tel2
+        })
+      });
+      const datos = await respuesta.json();
+      if (!datos.ok) throw new Error(datos.error || 'La hoja rechazó la respuesta.');
+
+      mostrarAviso(`Guardado: ${clienteElegido.sap} - ${clienteElegido.nombre}`, 'bien');
+      limpiarCliente();
+      telefono1.value = '';
+      telefono2.value = '';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (error) {
+      mostrarAviso('No se guardó. Tus datos siguen en pantalla, probá enviar otra vez. ' + error.message, 'mal');
+    } finally {
+      enviar.disabled = false;
+      enviar.textContent = 'Enviar';
+    }
+  });
+
+  cargarDatos();
+</script>
+</body>
+</html>
